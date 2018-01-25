@@ -22,9 +22,8 @@ class ScalaLanguageClient extends AutoLanguageClient { client =>
 
   /** Checks config setting first, if it's empty tries to find Java Home or report an error */
   private def getJavaHome(implicit ec: ExecutionContext): Future[String] = {
-    Future {
-      global.atom.config.get("ide-scala.jvm.javaHome").asInstanceOf[String]
-    }.filter(_.nonEmpty)
+    Future.successful(global.atom.config.get("ide-scala.jvm.javaHome").asInstanceOf[String])
+      .filter(_.nonEmpty)
       .fallbackTo(findJavaHome())
       .filter { javaHome =>
         // TODO: use accessSync
@@ -47,12 +46,12 @@ class ScalaLanguageClient extends AutoLanguageClient { client =>
 
   override def startServerProcess(projectPath: String): ChildProcess | js.Promise[ChildProcess] = {
     import ExecutionContext.Implicits.global
-    getJavaHome.map { javaHome =>
+    getJavaHome.flatMap { javaHome =>
       launchServer(javaHome, projectPath)
     }.toJSPromise
   }
 
-  private def launchServer(javaHome: String, projectPath: String): ChildProcess = {
+  private def launchServer(javaHome: String, projectPath: String)(implicit ec: ExecutionContext): Future[ChildProcess] = {
     val toolsJar = Path.join(javaHome, "lib", "tools.jar")
 
     val packagePath = global.atom.packages
@@ -63,25 +62,27 @@ class ScalaLanguageClient extends AutoLanguageClient { client =>
     val serverVersion = global.atom.config.get("ide-scala.serverVersion").asInstanceOf[String]
 
     val javaBin = Path.join(javaHome, "bin", "java")
-    val javaArgs =
-      server.javaArgs(projectPath) ++
-      global.atom.config.get("ide-scala.jvm.javaOpts").asInstanceOf[js.Array[String]] ++
-      Seq(
-        "-jar", coursierJar,
-        "launch", "--quiet",
-        "--extra-jars", toolsJar
-      ) ++
-      server.coursierArgs(serverVersion)
+    
+    server.coursierArgs(serverVersion).map { coursierArgs =>
+      val javaArgs =
+        server.javaArgs(projectPath) ++
+        global.atom.config.get("ide-scala.jvm.javaOpts").asInstanceOf[js.Array[String]] ++
+        Seq(
+          "-jar", coursierJar,
+          "launch", "--quiet",
+          "--extra-jars", toolsJar
+        ) ++ coursierArgs
+        
+        println((javaBin +: javaArgs).mkString("\n"))
 
-    println((javaBin +: javaArgs).mkString("\n"))
-
-    val serverProcess = ChildProcess.spawn(
-      javaBin,
-      javaArgs.toJSArray,
-      new SpawnOptions(cwd = projectPath)
-    )
-    client.captureServerErrors(serverProcess)
-    serverProcess
+        val serverProcess = ChildProcess.spawn(
+          javaBin,
+          javaArgs.toJSArray,
+          new SpawnOptions(cwd = projectPath)
+        )
+        client.captureServerErrors(serverProcess)
+        serverProcess
+    }
   }
 
   override def preInitialization(connection: js.Any): Unit = {
